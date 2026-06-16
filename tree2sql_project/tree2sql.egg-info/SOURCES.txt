@@ -1,0 +1,17 @@
+README.md
+setup.py
+data/__init__.py
+data/load_dataset.py
+tests/__init__.py
+tests/test_converter.py
+tree2sql/__init__.py
+tree2sql/benchmark.py
+tree2sql/converter.py
+tree2sql/database.py
+tree2sql/parser.py
+tree2sql/utils.py
+tree2sql.egg-info/PKG-INFO
+tree2sql.egg-info/SOURCES.txt
+tree2sql.egg-info/dependency_links.txt
+tree2sql.egg-info/requires.txt
+tree2sql.egg-info/top_level.txt
