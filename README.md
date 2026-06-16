@@ -1,31 +1,75 @@
 # Tree2SQL
 
-Tree2SQL converts trained scikit-learn decision trees into native SQL `CASE` expressions so predictions can run inside DuckDB without calling Python row by row.
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-SQL%20native%20ML-0f62fe.svg)](https://duckdb.org/)
+[![License](https://img.shields.io/badge/License-Unlicensed-lightgrey.svg)](#license)
 
-In practice, that means a model that would normally be evaluated through a Python UDF can instead be embedded directly into SQL and executed by DuckDB’s vectorized engine. The result is the same prediction logic, but with much faster inference and no Python overhead at query time.
+Tree2SQL converts trained scikit-learn decision trees into native SQL `CASE` expressions so predictions can run inside DuckDB without row-by-row Python execution.
 
-## What this project does
+Instead of relying on a Python UDF for every record, Tree2SQL compiles the tree logic into SQL that DuckDB can execute directly using its vectorized engine. The result is the same model behavior with dramatically less overhead and much faster inference for analytical workloads.
 
-Tree2SQL takes a fitted decision tree model and translates each root-to-leaf path into nested SQL `CASE WHEN ... THEN ... END` logic. The generated SQL can then be:
+## Table of Contents
 
-- printed and inspected as a standalone expression
-- embedded directly into larger SQL queries
-- rewritten automatically when using helper methods in the package
-- benchmarked against Python UDF execution in DuckDB
+- [Overview](#overview)
+- [How It Works](#how-it-works)
+- [Why Tree2SQL](#why-tree2sql)
+- [Features](#features)
+- [Installation](#installation)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Usage Examples](#usage-examples)
+- [Main Components](#main-components)
+- [Repository Structure](#repository-structure)
+- [Supported Models](#supported-models)
+- [Datasets and Demos](#datasets-and-demos)
+- [Performance Highlights](#performance-highlights)
+- [Safety and Correctness](#safety-and-correctness)
+- [Testing](#testing)
+- [Use Cases](#use-cases)
+- [Future Improvements](#future-improvements)
+- [License](#license)
+- [Contributing](#contributing)
+- [Acknowledgements](#acknowledgements)
 
-Because decision trees are rule-based and branch cleanly on feature thresholds, they map naturally to SQL conditionals. That makes Tree2SQL especially useful for database-native machine learning inference, analytics pipelines, and performance-sensitive batch scoring.
+## Overview
 
-## Why use Tree2SQL?
+Tree2SQL is a small but practical Python package for database-native machine learning inference. It focuses on one idea: decision trees can be translated exactly into SQL conditionals.
 
-Traditional Python-based inference in DuckDB can be slow because each row may require a Python call, data serialization, and GIL contention. Tree2SQL avoids that by keeping inference entirely in SQL.
+That makes it possible to:
 
-### Key benefits
+- train a tree in scikit-learn
+- convert it into SQL `CASE` logic
+- run predictions inside DuckDB
+- compare SQL inference to Python UDF inference
+- benchmark performance and correctness
 
-- **Faster inference**: often dramatically faster than Python UDFs
-- **Native DuckDB execution**: runs inside the SQL engine
-- **Exact logic preservation**: generated SQL mirrors the trained tree structure
-- **Easy integration**: works with normal SQL queries and DataFrames
-- **Transparent output**: generated `CASE` expressions are readable and debuggable
+This is especially useful when you want fast batch scoring, explainable tree logic, and a workflow that stays inside SQL instead of switching back and forth between Python and the database.
+
+## How It Works
+
+A decision tree splits on feature thresholds until it reaches a leaf. Tree2SQL walks the tree recursively and converts each branch into nested SQL logic.
+
+A simplified flow looks like this:
+
+1. Fit a scikit-learn decision tree.
+2. Read the tree structure and feature names.
+3. Convert each root-to-leaf path into SQL `WHEN` conditions.
+4. Emit a full `CASE WHEN ... THEN ... END` expression.
+5. Use that SQL expression directly in DuckDB queries.
+
+Because the model is translated rather than approximated, the generated SQL is intended to match the original tree’s predictions exactly.
+
+## Why Tree2SQL
+
+Traditional Python-based inference in DuckDB can be slow because each row may trigger Python execution, serialization overhead, and GIL contention. Tree2SQL avoids that by keeping the prediction logic in SQL.
+
+### Key advantages
+
+- **Faster inference** — avoids Python row-by-row execution
+- **Native DuckDB execution** — uses the database engine directly
+- **Exact logic preservation** — mirrors the trained tree structure
+- **Readable output** — generated SQL can be inspected and audited
+- **Easy integration** — works with SQL queries, DataFrames, and notebooks
 
 ## Features
 
@@ -33,21 +77,11 @@ Traditional Python-based inference in DuckDB can be slow because each row may re
 - Convert `DecisionTreeRegressor` models to SQL
 - Support binary and multi-class classification
 - Generate nested `CASE` expressions for any tree depth
-- Embed predictions directly into `SELECT` statements
-- Rewrite `predict_*()` calls into SQL automatically
-- Benchmark SQL execution against Python UDF execution
+- Embed predictions directly inside `SELECT` statements
+- Rewrite `predict_*()` calls automatically
+- Benchmark SQL inference against Python UDF execution
 - Validate correctness between Python and SQL predictions
-- Handle quoted column names and special characters safely
-
-## Project highlights
-
-The repository includes validated demos showing that Tree2SQL can achieve large speedups while maintaining prediction fidelity.
-
-Examples from the included benchmark results:
-
-- Stroke prediction classification: 100% agreement between SQL and Python predictions
-- California housing regression: numerically identical results with negligible floating-point differences
-- Speedups ranging from tens to hundreds of times faster depending on model depth and workload
+- Safely handle quoted column names and special characters
 
 ## Installation
 
@@ -79,7 +113,7 @@ Optional extras include:
 - `pytest` for testing
 - `jupyter` and `ipykernel` for notebooks
 
-## Quick start
+## Quick Start
 
 ### 1. Train a decision tree
 
@@ -137,7 +171,50 @@ WHERE last_activity_days > 30
 db.execute(sql, rewrite=False)
 ```
 
-## Main components
+## Usage Examples
+
+### Generate a SQL expression from a tree
+
+```python
+from sklearn.tree import DecisionTreeClassifier
+from tree2sql import TreeToSQL
+
+model = DecisionTreeClassifier(max_depth=3, random_state=42)
+model.fit(X_train, y_train)
+
+converter = TreeToSQL(model, feature_names=X_train.columns.tolist(), model_name="demo_model")
+print(converter.to_sql())
+```
+
+### Run predictions from SQL
+
+```python
+from tree2sql import Database
+
+db = Database()
+db.load_dataframe(df, "input_table")
+db.register_model("demo_model", converter)
+
+predictions = db.query_df("""
+    SELECT
+        *,
+        predict_demo_model(feature_1, feature_2, feature_3) AS prediction
+    FROM input_table
+""")
+```
+
+### Use the expression in custom SQL
+
+```python
+sql = f"""
+SELECT
+    id,
+    {converter.to_select_expr(alias='prediction')}
+FROM input_table
+"""
+```
+
+## Main Components
 
 ### `TreeToSQL`
 
@@ -158,7 +235,7 @@ A lightweight DuckDB wrapper for loading data, registering models, and executing
 
 Utility for comparing SQL-native inference against Python UDF inference and for plotting speedups.
 
-## Repository structure
+## Repository Structure
 
 ```text
 tree2sql_project/
@@ -171,13 +248,51 @@ tree2sql_project/
 └── setup.py             # Package configuration
 ```
 
-## Example use cases
+## Supported Models
 
-- scoring predictions directly in SQL warehouses or embedded analytics engines
-- replacing slow Python UDF-based inference paths
-- explaining and auditing tree-based model logic
-- running batch predictions during reporting or ETL jobs
-- benchmarking native SQL inference vs Python execution
+Tree2SQL currently supports:
+
+- `DecisionTreeClassifier` for binary classification
+- `DecisionTreeClassifier` for multi-class classification
+- `DecisionTreeRegressor`
+
+It is designed to work with trees of different depths, and it can safely handle feature names that contain spaces or special characters.
+
+## Datasets and Demos
+
+The repository includes notebooks and data helpers for exploring the project in more depth.
+
+### Example demos
+
+- **Demo notebook** — step-by-step walkthrough of the workflow
+- **Benchmark notebook** — performance analysis and plots
+- **Stroke classification demo** — classification example with benchmark results
+- **California housing demo** — regression example with benchmark results
+
+### Dataset support
+
+The project includes a Bank Marketing dataset loader and uses `ucimlrepo` with a synthetic fallback if the dataset cannot be fetched.
+
+## Performance Highlights
+
+Tree2SQL was validated on both classification and regression workloads.
+
+Examples from the included benchmark results:
+
+- Stroke prediction classification: 100% agreement between SQL and Python predictions
+- California housing regression: numerically identical predictions with negligible floating-point differences
+- Speedups ranging from tens to hundreds of times faster depending on tree depth and workload
+
+These results show that converting decision trees to SQL can preserve model fidelity while significantly improving execution speed.
+
+## Safety and Correctness
+
+Tree2SQL generates SQL carefully to preserve model behavior and reduce risk:
+
+- feature names are validated and quoted
+- threshold values are represented exactly
+- generated SQL avoids user-controlled string interpolation
+- SQL and Python outputs can be checked for parity with tests and benchmarks
 
 ## Testing
 
@@ -187,33 +302,17 @@ Run the test suite with:
 pytest tests/ -v
 ```
 
-## Notebooks
+You can also validate the project manually by running the notebooks and comparing SQL and Python outputs on the included datasets.
 
-The repository includes notebooks for interactive exploration and benchmarking, such as:
+## Use Cases
 
-- a step-by-step demo notebook
-- depth sweep benchmark analysis
-- stroke classification demo
-- California housing regression demo
+- scoring predictions directly in SQL warehouses or embedded analytics engines
+- replacing slow Python UDF-based inference paths
+- explaining and auditing tree-based model logic
+- running batch predictions during reporting or ETL jobs
+- benchmarking native SQL inference vs Python execution
 
-## Supported models
-
-Tree2SQL currently supports:
-
-- `DecisionTreeClassifier` for binary classification
-- `DecisionTreeClassifier` for multi-class classification
-- `DecisionTreeRegressor`
-
-## Safety and correctness
-
-Tree2SQL generates SQL carefully to preserve model behavior and reduce risk:
-
-- feature names are validated and quoted
-- threshold values are represented exactly
-- generated SQL avoids user-controlled string interpolation
-- SQL and Python outputs can be checked for parity with tests and benchmarks
-
-## Future improvements
+## Future Improvements
 
 Possible future enhancements for this project could include:
 
